@@ -1,22 +1,85 @@
-name: Build
+name: Build Cross-Platform
 
-on: [push]
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
 
 jobs:
   build:
     strategy:
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        include:
+          - os: macos-latest
+            artifact-name: archive-dirs-macos
+            executable-path: .build/release/archive-dirs
+          - os: ubuntu-latest
+            artifact-name: archive-dirs-linux
+            executable-path: .build/release/archive-dirs
+          - os: windows-latest
+            artifact-name: archive-dirs-windows
+            executable-path: .build/release/archive-dirs.exe
+    
     runs-on: ${{ matrix.os }}
     
     steps:
-    - uses: actions/checkout@v3
-    - uses: swift-actions/setup-swift@v1
-    - name: Build
-      run: swift build -c release
-    - name: Upload artifact
-      uses: actions/upload-artifact@v3
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Swift
+      uses: swift-actions/setup-swift@v2
       with:
-        name: archive-dirs-${{ matrix.os }}
-        path: .build/release/archive-dirs*
-        
+        swift-version: "5.9"
+    
+    - name: Get Swift version
+      run: swift --version
+    
+    - name: Resolve dependencies
+      run: swift package resolve
+    
+    - name: Build release
+      run: swift build -c release
+    
+    - name: Test executable (Unix)
+      if: runner.os != 'Windows'
+      run: |
+        chmod +x ${{ matrix.executable-path }}
+        ${{ matrix.executable-path }} --help
+    
+    - name: Test executable (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        ${{ matrix.executable-path }} --help
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.artifact-name }}
+        path: ${{ matrix.executable-path }}
+        if-no-files-found: error
+        retention-days: 90
+    
+  create-release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          artifacts/archive-dirs-macos/archive-dirs
+          artifacts/archive-dirs-linux/archive-dirs
+          artifacts/archive-dirs-windows/archive-dirs.exe
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
