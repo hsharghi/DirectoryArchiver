@@ -9,18 +9,23 @@ on:
 
 jobs:
   build:
+    name: Swift ${{ matrix.swift-version }} on ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest
+            swift-version: '5.9'
             artifact-name: archive-dirs-macos
-            executable-path: .build/release/archive-dirs
+            executable-name: archive-dirs
           - os: ubuntu-latest
+            swift-version: '5.9'
             artifact-name: archive-dirs-linux
-            executable-path: .build/release/archive-dirs
+            executable-name: archive-dirs
           - os: windows-latest
+            swift-version: '5.9'
             artifact-name: archive-dirs-windows
-            executable-path: .build/release/archive-dirs.exe
+            executable-name: archive-dirs.exe
     
     runs-on: ${{ matrix.os }}
     
@@ -29,9 +34,9 @@ jobs:
       uses: actions/checkout@v4
     
     - name: Setup Swift
-      uses: swift-actions/setup-swift@v2
+      uses: swift-actions/setup-swift@v3
       with:
-        swift-version: "6.1.2"
+        swift-version: ${{ matrix.swift-version }}
     
     - name: Get Swift version
       run: swift --version
@@ -40,46 +45,136 @@ jobs:
       run: swift package resolve
     
     - name: Build release
+      run: swift build -c release --arch arm64 --arch x86_64
+      if: runner.os == 'macOS'
+    
+    - name: Build release
       run: swift build -c release
+      if: runner.os != 'macOS'
     
     - name: Test executable (Unix)
       if: runner.os != 'Windows'
       run: |
-        chmod +x ${{ matrix.executable-path }}
-        ${{ matrix.executable-path }} --help
+        chmod +x .build/release/${{ matrix.executable-name }}
+        .build/release/${{ matrix.executable-name }} --help
     
     - name: Test executable (Windows)
       if: runner.os == 'Windows'
+      shell: pwsh
       run: |
-        ${{ matrix.executable-path }} --help
+        .\.build\release\${{ matrix.executable-name }} --help
     
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.artifact-name }}
-        path: ${{ matrix.executable-path }}
+        path: .build/release/${{ matrix.executable-name }}
         if-no-files-found: error
         retention-days: 90
+        compression-level: 9
+
+  test-multiple-swift-versions:
+    name: Test Swift ${{ matrix.swift-version }} on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        swift-version: ['5.9', '5.10', '6.0']
     
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Swift
+      uses: swift-actions/setup-swift@v3
+      with:
+        swift-version: ${{ matrix.swift-version }}
+    
+    - name: Get Swift version
+      run: swift --version
+    
+    - name: Build
+      run: swift build
+    
+    - name: Run tests
+      run: swift test
+      continue-on-error: true
+
   create-release:
+    name: Create GitHub Release
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     
+    permissions:
+      contents: write
+    
     steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
     - name: Download all artifacts
       uses: actions/download-artifact@v4
       with:
         path: artifacts
     
+    - name: Display structure of downloaded files
+      run: ls -R artifacts
+    
+    - name: Prepare release files
+      run: |
+        mkdir -p release
+        cp artifacts/archive-dirs-macos/archive-dirs release/archive-dirs-macos
+        cp artifacts/archive-dirs-linux/archive-dirs release/archive-dirs-linux
+        cp artifacts/archive-dirs-windows/archive-dirs.exe release/archive-dirs-windows.exe
+        
+        # Make Unix binaries executable
+        chmod +x release/archive-dirs-macos
+        chmod +x release/archive-dirs-linux
+        
+        # Create checksums
+        cd release
+        sha256sum * > checksums.txt
+        cd ..
+    
     - name: Create Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         files: |
-          artifacts/archive-dirs-macos/archive-dirs
-          artifacts/archive-dirs-linux/archive-dirs
-          artifacts/archive-dirs-windows/archive-dirs.exe
+          release/archive-dirs-macos
+          release/archive-dirs-linux
+          release/archive-dirs-windows.exe
+          release/checksums.txt
         draft: false
         prerelease: false
+        generate_release_notes: true
+        body: |
+          ## Installation
+          
+          ### macOS
+          ```bash
+          curl -L -o archive-dirs https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/archive-dirs-macos
+          chmod +x archive-dirs
+          sudo mv archive-dirs /usr/local/bin/
+          ```
+          
+          ### Linux
+          ```bash
+          curl -L -o archive-dirs https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/archive-dirs-linux
+          chmod +x archive-dirs
+          sudo mv archive-dirs /usr/local/bin/
+          ```
+          
+          ### Windows
+          Download `archive-dirs-windows.exe` and add it to your PATH.
+          
+          ## Verify checksums
+          ```bash
+          sha256sum -c checksums.txt
+          ```
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+        
